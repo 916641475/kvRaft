@@ -1,33 +1,99 @@
 package mr
 
-import "log"
-import "net"
-import "os"
-import "net/rpc"
-import "net/http"
+import (
+	"log"
+	"net"
+	"net/http"
+	"net/rpc"
+	"os"
+	"strconv"
+	"time"
+)
 
+type Pair struct {
+	beginTime time.Time
+	finish    bool
+}
 
 type Coordinator struct {
-	// Your definitions here.
+	nReduce        int
+	ptr            *[]string
+	mapTaskInfo    map[string]Pair
+	reduceTaskInfo map[string]Pair
+	mapFinish      bool
+	reduceFinish   bool
+}
 
+func (c *Coordinator) init(nReduce int, ptr *[]string) {
+	c.nReduce = nReduce
+	c.ptr = ptr
+	c.mapFinish = false
+	c.reduceFinish = false
+	var initpair Pair = Pair{time.Date(2000, time.January, 1, 1, 0, 0, 0, time.Local), false}
+	for i := 0; i < len(*ptr); i++ {
+		c.mapTaskInfo[(*ptr)[i]] = initpair
+	}
+	for i := 0; i < nReduce; i++ {
+		c.reduceTaskInfo[strconv.Itoa(i)] = initpair
+	}
+}
+
+func (c *Coordinator) findAvaliable(tasktype string) string {
+	var totalfinish bool = true
+	var taskInfo *map[string]Pair
+	if tasktype == "map" {
+		taskInfo = &c.mapTaskInfo
+	} else {
+		taskInfo = &c.reduceTaskInfo
+	}
+
+	for key, value := range *taskInfo {
+		if !value.finish {
+			totalfinish = false
+			if time.Now().Sub(value.beginTime) >= 10 {
+				c.mapTaskInfo[key] = Pair{time.Now(), false}
+				return key
+			}
+		}
+	}
+
+	if tasktype == "map" {
+		c.mapFinish = totalfinish
+	} else {
+		c.reduceFinish = totalfinish
+	}
+	if totalfinish == true {
+		return "finish"
+	} else {
+		return "wait"
+	}
 }
 
 // Your code here -- RPC handlers for the worker to call.
 
-//
 // an example RPC handler.
 //
 // the RPC argument and reply types are defined in rpc.go.
-//
-func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
-	reply.Y = args.X + 1
+func (c *Coordinator) AssignMap(args byte, reply *string) error {
+	*reply = c.findAvaliable("map")
 	return nil
 }
 
+func (c *Coordinator) AssignReduce(args byte, reply *int) error {
+	*reply, _ = strconv.Atoi(c.findAvaliable("reduce"))
+	return nil
+}
 
-//
+func (c *Coordinator) TaskComplete(args string, reply *byte) error {
+	if !c.mapFinish {
+		c.mapTaskInfo[args] = Pair{time.Now(), true}
+	} else {
+		c.reduceTaskInfo[args] = Pair{time.Now(), true}
+	}
+	return nil
+}
+
 // start a thread that listens for RPCs from worker.go
-//
 func (c *Coordinator) server() {
 	rpc.Register(c)
 	rpc.HandleHTTP()
@@ -41,29 +107,18 @@ func (c *Coordinator) server() {
 	go http.Serve(l, nil)
 }
 
-//
 // main/mrcoordinator.go calls Done() periodically to find out
 // if the entire job has finished.
-//
 func (c *Coordinator) Done() bool {
-	ret := false
-
-	// Your code here.
-
-
-	return ret
+	return c.reduceFinish
 }
 
-//
 // create a Coordinator.
 // main/mrcoordinator.go calls this function.
 // nReduce is the number of reduce tasks to use.
-//
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{}
-
-	// Your code here.
-
+	c.init(nReduce, &files)
 
 	c.server()
 	return &c
