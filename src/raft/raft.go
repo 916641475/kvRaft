@@ -42,10 +42,12 @@ type Raft struct {
 	CurrentTerm int
 	VotedFor    int
 	Logs        []LogEntry
+
 	CommitIndex int
 	LastApply   int
-	NextIndex   []int
-	MatchIndex  []int
+
+	NextIndex  []int
+	MatchIndex []int
 
 	ReelectTime   time.Time
 	HeartBeatTime time.Time
@@ -138,8 +140,9 @@ type AppendEntriesReply struct {
 }
 
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
+	rf.mu.Lock()
+	reply.Term = rf.CurrentTerm
 	if rf.CurrentTerm > args.Term || rf.newer(args) || (rf.CurrentTerm == args.Term && rf.VotedFor != -1) {
-		reply.Term = rf.CurrentTerm
 		reply.VoteGrant = false
 		if rf.CurrentTerm < args.Term {
 			rf.CurrentTerm = args.Term
@@ -147,10 +150,10 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	} else {
 		rf.convert2Follower(args.Term)
 		rf.VotedFor = args.CandidateId
-		reply.Term = rf.CurrentTerm
 		//fmt.Printf("server%d vote for candidate%d in term:%d\n", rf.me, args.CandidateId, rf.CurrentTerm)
 		reply.VoteGrant = true
 	}
+	rf.mu.Unlock()
 }
 
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
@@ -159,27 +162,29 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	rf.mu.Lock()
 	reply.Term = rf.CurrentTerm
 	if args.Term < rf.CurrentTerm {
 		reply.Success = false
 		//fmt.Printf("server%d reject outdate leader %d\n", rf.me, args.LeaderID)
+		rf.mu.Unlock()
 		return
 	}
 
 	rf.ReelectTime = nextReelectTime()
-	if rf.state == CANDIDATE {
+	if rf.state != FOLLOWER {
 		rf.convert2Follower(args.Term)
 	}
 
 	if !(args.PrevLogIndex <= len(rf.Logs)-1 && rf.Logs[args.PrevLogIndex].Term == args.PrevLogTerm) {
 		reply.Success = false
+		rf.mu.Unlock()
 		return
 	}
 	reply.Success = true
 	if args.Entries != nil &&
 		!(rf.leaderID == args.LeaderID && len(rf.Logs) >= args.PrevLogIndex+len(args.Entries)+1) {
 		rf.Logs = append(rf.Logs[:args.PrevLogIndex+1], args.Entries...)
-		//fmt.Printf("leader: %d, server %d, %v\n%v\n", args.LeaderID, rf.me, args.Entries, rf.Logs)
 		//fmt.Printf("(Term%d) server%d : %v\n", rf.CurrentTerm, rf.me, rf.Logs)
 	}
 	if rf.CommitIndex < args.LeaderCommit {
@@ -188,6 +193,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.sendApply(increment)
 	}
 	rf.leaderID = args.LeaderID
+	rf.mu.Unlock()
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
@@ -218,16 +224,24 @@ func (rf *Raft) killed() bool {
 func (rf *Raft) ticker() {
 	for !rf.killed() {
 		time.Sleep(CHECKINTERVAL)
+		rf.mu.Lock()
 		if rf.state != LEADER && time.Now().After(rf.ReelectTime) {
 			rf.convert2Candidate()
+			rf.mu.Unlock()
 			if rf.requestVoteMonitor() {
+				rf.mu.Lock()
 				rf.convert2Leader()
+				rf.mu.Unlock()
 			}
+		} else {
+			rf.mu.Unlock()
 		}
+		rf.mu.Lock()
 		if rf.state == LEADER && time.Now().After(rf.HeartBeatTime) {
 			go rf.appendEntriesHepler()
 			rf.HeartBeatTime = nextHeartBeatTime()
 		}
+		rf.mu.Unlock()
 	}
 }
 

@@ -71,26 +71,33 @@ func (rf *Raft) requestVoteMonitor() bool {
 		}
 	}
 
-	for !rf.killed() && rf.state == CANDIDATE {
+	for {
 		cnt := 0
 		time.Sleep(CHECKINTERVAL)
 		if time.Now().After(rf.ReelectTime) {
 			return false
 		}
+		rf.mu.Lock()
+		if rf.state != CANDIDATE {
+			rf.mu.Unlock()
+			return false
+		}
 		for _, reply := range voteReplies {
 			if reply.Term > rf.CurrentTerm {
 				rf.convert2Follower(reply.Term)
+				rf.mu.Unlock()
 				return false
 			}
 			if reply.VoteGrant {
 				cnt++
 			}
 			if cnt > rf.peernum/2 {
+				rf.mu.Unlock()
 				return true
 			}
 		}
+		rf.mu.Unlock()
 	}
-	return false
 }
 
 func (rf *Raft) increCommit() int {
@@ -133,6 +140,7 @@ func (rf *Raft) tryAppend(server int, reply *AppendEntriesReply) {
 		rf.Logs[prevLogIndex].Term, entries, rf.CommitIndex}
 	rf.mu.Unlock()
 	//fmt.Printf("leader%d send to server%d\n", rf.me, server)
+
 	rf.mu.Lock()
 	if rf.state != LEADER {
 		rf.mu.Unlock()
@@ -141,6 +149,7 @@ func (rf *Raft) tryAppend(server int, reply *AppendEntriesReply) {
 		rf.mu.Unlock()
 	}
 	ok := rf.sendAppendEntries(server, args, reply)
+
 	rf.mu.Lock()
 	if rf.state == LEADER {
 		if ok {
@@ -166,10 +175,12 @@ func (rf *Raft) tryAppend(server int, reply *AppendEntriesReply) {
 				}
 				rf.mu.Unlock()
 			}
+		} else if entries != nil {
+			rf.mu.Unlock()
+			time.Sleep(CHECKINTERVAL)
+			rf.tryAppend(server, reply)
 		} else {
 			rf.mu.Unlock()
-			time.Sleep(HEARTBEATINTERVAL)
-			rf.tryAppend(server, reply)
 		}
 	} else {
 		rf.mu.Unlock()
