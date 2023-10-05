@@ -12,8 +12,16 @@ type LogEntry struct {
 	Term    int
 }
 
+func min(x int, y int) int {
+	if x <= y {
+		return x
+	} else {
+		return y
+	}
+}
+
 func nextReelectTime() time.Time {
-	return time.Now().Add(time.Duration((MINRELECTDCYCLE + 5*rand.Intn(MINRELECTDCYCLE/5))) * time.Millisecond)
+	return time.Now().Add(time.Duration(MINRELECTDCYCLE+rand.Intn(MINRELECTDCYCLE)) * time.Millisecond)
 }
 
 func nextHeartBeatTime() time.Time {
@@ -25,173 +33,183 @@ func (rf *Raft) convert2Follower(term int) {
 	rf.state = FOLLOWER
 	rf.VotedFor = -1
 	rf.ReelectTime = nextReelectTime()
+	rf.persist()
 }
 
 func (rf *Raft) convert2Leader() {
-	//fmt.Printf("leader%d (Term%d)\n", rf.me, rf.CurrentTerm)
+	DPrintf("leader%d (Term%d)\n", rf.me, rf.CurrentTerm)
 	rf.state = LEADER
 	rf.leaderID = rf.me
 	rf.NextIndex = make([]int, rf.peernum)
+	rf.MatchIndex = make([]int, rf.peernum)
+	rf.need_heart_beat_ = make([]bool, rf.peernum)
 	for i := 0; i < rf.peernum; i++ {
 		rf.NextIndex[i] = len(rf.Logs)
+		rf.need_heart_beat_[i] = true
 	}
-	rf.MatchIndex = make([]int, rf.peernum)
-	rf.HeartBeatTime = time.Now()
+	rf.HeartBeatTime = nextHeartBeatTime()
+	rf.replicate_conds_.Broadcast()
 }
 
 func (rf *Raft) convert2Candidate() {
 	rf.state = CANDIDATE
 	rf.CurrentTerm++
-	//fmt.Printf("candidate%d try to become leader in term:%d\n", rf.me, rf.CurrentTerm)
+	DPrintf("candidate%d try to become leader in term:%d\n", rf.me, rf.CurrentTerm)
 	rf.VotedFor = rf.me
+	rf.persist()
 	rf.ReelectTime = nextReelectTime()
 }
 
 func (rf *Raft) newer(args *RequestVoteArgs) bool {
-	lastLogIndex := len(rf.Logs) - 1
-	if rf.Logs[lastLogIndex].Term > args.LastLogTerm ||
-		(rf.Logs[lastLogIndex].Term == args.LastLogTerm && lastLogIndex > args.LastLogIndex) {
+	last_log_index_server := len(rf.Logs) - 1
+	if rf.Logs[last_log_index_server].Term > args.LastLogTerm ||
+		(rf.Logs[last_log_index_server].Term == args.LastLogTerm && last_log_index_server > args.LastLogIndex) {
 		return true
 	}
 	return false
 }
 
-func (rf *Raft) requestVoteMonitor() bool {
-	voteReplies := make([]RequestVoteReply, rf.peernum)
-
-	for i := 0; i < rf.peernum; i++ {
-		if i == rf.me {
-			voteReplies[i].Term = rf.CurrentTerm
-			voteReplies[i].VoteGrant = true
-		} else {
-			lastLogIndex := len(rf.Logs) - 1
-			args := &RequestVoteArgs{rf.me, rf.CurrentTerm, lastLogIndex, rf.Logs[lastLogIndex].Term}
-			reply := &(voteReplies[i])
-			go rf.sendRequestVote(i, args, reply)
-		}
-	}
-
-	for {
-		cnt := 0
+func (rf *Raft) electionThread() {
+	for !rf.killed() {
 		time.Sleep(CHECKINTERVAL)
-		if time.Now().After(rf.ReelectTime) {
-			return false
-		}
 		rf.mu.Lock()
-		if rf.state != CANDIDATE {
+		if rf.state != LEADER && time.Now().After(rf.ReelectTime) {
+			rf.convert2Candidate()
+			last_log_index := len(rf.Logs) - 1
+			args := RequestVoteArgs{
+				CandidateId: rf.me, Term: rf.CurrentTerm, LastLogIndex: last_log_index, LastLogTerm: rf.Logs[last_log_index].Term,
+			}
 			rf.mu.Unlock()
-			return false
-		}
-		for _, reply := range voteReplies {
-			if reply.Term > rf.CurrentTerm {
-				rf.convert2Follower(reply.Term)
-				rf.mu.Unlock()
-				return false
-			}
-			if reply.VoteGrant {
-				cnt++
-			}
-			if cnt > rf.peernum/2 {
-				rf.mu.Unlock()
-				return true
-			}
-		}
-		rf.mu.Unlock()
-	}
-}
 
-func (rf *Raft) increCommit() int {
-	var increment int = 1
-	for {
-		target := rf.CommitIndex + increment
-		var cnt int = 0
-		for index, value := range rf.MatchIndex {
-			if value >= target || index == rf.me {
-				cnt++
-			}
-		}
-		if cnt <= rf.peernum/2 {
-			return increment - 1
-		}
-		increment++
-	}
-}
-
-func (rf *Raft) sendApply(newCommit int) {
-	for i := newCommit - 1; i >= 0; i-- {
-		applyMsg := ApplyMsg{}
-		applyMsg.CommandValid = true
-		applyMsg.CommandIndex = rf.CommitIndex - i
-		applyMsg.Command = rf.Logs[applyMsg.CommandIndex].Content
-		rf.applyCh <- applyMsg
-	}
-}
-
-func (rf *Raft) tryAppend(server int, reply *AppendEntriesReply) {
-	rf.mu.Lock()
-	prevLogIndex := rf.NextIndex[server] - 1
-	var entries []LogEntry
-	if prevLogIndex == len(rf.Logs)-1 {
-		entries = nil
-	} else {
-		entries = append(entries, rf.Logs[prevLogIndex+1:]...)
-	}
-	args := &AppendEntriesArgs{rf.CurrentTerm, rf.me, prevLogIndex,
-		rf.Logs[prevLogIndex].Term, entries, rf.CommitIndex}
-	rf.mu.Unlock()
-	//fmt.Printf("leader%d send to server%d\n", rf.me, server)
-
-	rf.mu.Lock()
-	if rf.state != LEADER {
-		rf.mu.Unlock()
-		return
-	} else {
-		rf.mu.Unlock()
-	}
-	ok := rf.sendAppendEntries(server, args, reply)
-
-	rf.mu.Lock()
-	if rf.state == LEADER {
-		if ok {
-			if reply.Term > rf.CurrentTerm {
-				//fmt.Printf("leader%d become to follower\n", rf.me)
-				rf.convert2Follower(reply.Term)
-				rf.mu.Unlock()
-			} else if !reply.Success {
-				rf.NextIndex[server]--
-				rf.mu.Unlock()
-				rf.tryAppend(server, reply)
-			} else {
-				if entries != nil && (rf.MatchIndex[server] < prevLogIndex+len(entries)) {
-					rf.MatchIndex[server] = prevLogIndex + len(entries)
-					rf.NextIndex[server] = rf.MatchIndex[server] + 1
-					if rf.CurrentTerm == entries[len(entries)-1].Term {
-						increment := rf.increCommit()
-						if increment > 0 {
-							rf.CommitIndex += increment
-							rf.sendApply(increment)
+			cnt := 0
+			for i := 0; i < rf.peernum; i++ {
+				if i == rf.me {
+					cnt++
+					continue
+				}
+				go func(server int, args *RequestVoteArgs) {
+					reply := &RequestVoteReply{}
+					ok := rf.sendRequestVote(server, args, reply)
+					if !ok {
+						return
+					}
+					rf.mu.Lock()
+					defer rf.mu.Unlock()
+					if rf.state == CANDIDATE && args.Term == rf.CurrentTerm {
+						if rf.CurrentTerm < reply.Term {
+							rf.convert2Follower(args.Term)
+						} else if reply.VoteGrant {
+							cnt++
+							if cnt > rf.peernum/2 {
+								rf.convert2Leader()
+							}
 						}
+					}
+				}(i, &args)
+			}
+		} else {
+			rf.mu.Unlock()
+		}
+	}
+}
+
+func (rf *Raft) replicateThread(server int) {
+	for !rf.killed() {
+		rf.mu.Lock()
+		for rf.state != LEADER || (rf.state == LEADER && !rf.need_heart_beat_[server] && rf.NextIndex[server] > len(rf.Logs)-1) {
+			rf.replicate_conds_.Wait()
+		}
+		rf.need_heart_beat_[server] = false
+
+		for {
+			prev_log_index := rf.NextIndex[server] - 1
+			var entries []LogEntry
+			if prev_log_index >= len(rf.Logs)-1 {
+				entries = nil
+			} else {
+				entries = rf.Logs[prev_log_index+1:]
+			}
+			args := &AppendEntriesArgs{
+				Term: rf.CurrentTerm, LeaderID: rf.me, PrevLogIndex: prev_log_index,
+				PrevLogTerm: rf.Logs[prev_log_index].Term, Entries: entries, LeaderCommit: rf.CommitIndex,
+			}
+			rf.mu.Unlock()
+			reply := &AppendEntriesReply{}
+
+			ok := rf.sendAppendEntries(server, args, reply)
+			if !ok {
+				break
+			}
+
+			rf.mu.Lock()
+			if args.Term != rf.CurrentTerm {
+				rf.mu.Unlock()
+				break
+			}
+			if rf.CurrentTerm < reply.Term {
+				rf.convert2Follower(reply.Term)
+				rf.mu.Unlock()
+				break
+			}
+			if !reply.Success {
+				rf.NextIndex[server] = reply.NextIndex
+			} else {
+				if entries != nil {
+					rf.NextIndex[server] += len(args.Entries)
+					rf.MatchIndex[server] = rf.NextIndex[server] - 1
+
+					var new_commit int = rf.CommitIndex + 1
+					for ; new_commit < len(rf.Logs); new_commit++ {
+						cnt := 0
+						for j := 0; j < rf.peernum; j++ {
+							if j == rf.me || rf.MatchIndex[j] >= new_commit {
+								cnt++
+							}
+						}
+						if cnt <= rf.peernum/2 {
+							break
+						}
+					}
+					new_commit -= 1
+					if new_commit > rf.CommitIndex && rf.Logs[new_commit].Term == rf.CurrentTerm {
+						rf.CommitIndex = new_commit
+						rf.apply_cond_.Broadcast()
 					}
 				}
 				rf.mu.Unlock()
+				break
 			}
-		} else if entries != nil {
-			rf.mu.Unlock()
-			time.Sleep(CHECKINTERVAL)
-			rf.tryAppend(server, reply)
-		} else {
-			rf.mu.Unlock()
 		}
-	} else {
+	}
+}
+
+func (rf *Raft) applyThread() {
+	for !rf.killed() {
+		rf.mu.Lock()
+		for rf.CommitIndex <= rf.ApplyIndex {
+			rf.apply_cond_.Wait()
+		}
+		for i := rf.ApplyIndex + 1; i <= rf.CommitIndex; i++ {
+			rf.applyCh <- ApplyMsg{
+				CommandValid: true, CommandIndex: i, Command: rf.Logs[i].Content,
+			}
+		}
+		rf.ApplyIndex = rf.CommitIndex
 		rf.mu.Unlock()
 	}
 }
 
-func (rf *Raft) appendEntriesHepler() {
-	appendReplies := make([]AppendEntriesReply, rf.peernum)
-	for i := 0; i < rf.peernum; i++ {
-		if i != rf.me {
-			go rf.tryAppend(i, &(appendReplies[i]))
+func (rf *Raft) activateHeartBeatThread() {
+	for !rf.killed() {
+		time.Sleep(CHECKINTERVAL)
+		rf.mu.Lock()
+		if rf.state == LEADER && time.Now().After(rf.HeartBeatTime) {
+			for i := 0; i < rf.peernum; i++ {
+				rf.need_heart_beat_[i] = true
+			}
+			rf.HeartBeatTime = nextHeartBeatTime()
+			rf.replicate_conds_.Broadcast()
 		}
+		rf.mu.Unlock()
 	}
 }
