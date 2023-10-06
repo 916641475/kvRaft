@@ -66,7 +66,6 @@ func (rf *Raft) convert2Follower(term int) {
 }
 
 func (rf *Raft) convert2Leader() {
-	DPrintf("leader%d (Term%d), lastindex:%d", rf.me, rf.CurrentTerm, rf.LastLogIndex())
 	rf.state = kLEADER
 	rf.leaderID = rf.me
 	rf.NextIndex = make([]int, rf.peernum)
@@ -83,7 +82,6 @@ func (rf *Raft) convert2Leader() {
 func (rf *Raft) convert2Candidate() {
 	rf.state = KCANDIDATE
 	rf.CurrentTerm++
-	DPrintf("candidate%d (Term%d)", rf.me, rf.CurrentTerm)
 	rf.VotedFor = rf.me
 	rf.persist()
 	rf.ReelectTime = nextReelectTime()
@@ -188,8 +186,6 @@ func (rf *Raft) replicateThread(server int) {
 		}
 		rf.mu.Unlock()
 		reply := &AppendEntriesReply{}
-
-		DPrintf("leader%d send to server%d", rf.me, server)
 
 		ok := rf.sendAppendEntries(server, args, reply)
 		if !ok {

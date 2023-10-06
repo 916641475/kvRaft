@@ -91,7 +91,6 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	rf.ApplyIndex = Max(index, rf.ApplyIndex)
 
 	rf.persister.SaveStateAndSnapshot(rf.serializeState(), snapshot)
-	DPrintf("server%d snapshot with lastindex%d", rf.me, rf.last_include_index_)
 }
 
 type RequestVoteArgs struct {
@@ -250,7 +249,6 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	rf.ApplyIndex = Max(rf.last_include_index_, rf.ApplyIndex)
 
 	rf.persister.SaveStateAndSnapshot(rf.serializeState(), args.Data)
-	//DPrintf("server%d install snapshot with lastindex%d", rf.me, rf.last_include_index_)
 	rf.applyCh <- ApplyMsg{
 		SnapshotValid: true,
 		Snapshot:      args.Data,
@@ -316,7 +314,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	rf.Logs = append(rf.Logs, LogEntry{})
 	rf.readPersist(persister.ReadRaftState())
-	DPrintf("lastindex%d", rf.last_include_index_)
 
 	go rf.electionThread()
 	for i := 0; i < rf.peernum; i++ {
