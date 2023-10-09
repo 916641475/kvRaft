@@ -1,13 +1,21 @@
 package kvraft
 
-import "6.824/labrpc"
-import "crypto/rand"
-import "math/big"
+import (
+	"crypto/rand"
+	"math/big"
+	"sync"
+	"time"
 
+	"6.824/labrpc"
+)
 
 type Clerk struct {
-	servers []*labrpc.ClientEnd
-	// You will have to modify this struct.
+	client_id_  int64
+	seq_num_    int
+	servers_    []*labrpc.ClientEnd
+	leader_     int
+	server_num_ int
+	mu          sync.Mutex
 }
 
 func nrand() int64 {
@@ -19,41 +27,63 @@ func nrand() int64 {
 
 func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
-	ck.servers = servers
-	// You'll have to add code here.
+	ck.client_id_ = nrand()
+	ck.seq_num_ = 1
+	ck.servers_ = servers
+	ck.leader_ = 0
+	ck.server_num_ = len(servers)
 	return ck
 }
 
-//
-// fetch the current value for a key.
-// returns "" if the key does not exist.
-// keeps trying forever in the face of all other errors.
-//
-// you can send an RPC with code like this:
-// ok := ck.servers[i].Call("KVServer.Get", &args, &reply)
-//
-// the types of args and reply (including whether they are pointers)
-// must match the declared types of the RPC handler function's
-// arguments. and reply must be passed as a pointer.
-//
 func (ck *Clerk) Get(key string) string {
+	ck.mu.Lock()
+	defer ck.mu.Unlock()
+	args := &GetArgs{Key: key}
+	reply := &GetReply{}
 
-	// You will have to modify this function.
-	return ""
+	server := ck.leader_
+	for {
+		end_time := time.Now().Add(kTimeoutThsh)
+		var ok bool
+		go func(args *GetArgs, reply *GetReply) {
+			ok = ck.servers_[server].Call("KVServer.Get", args, reply)
+		}(args, reply)
+		for time.Now().Before(end_time) && !ok {
+			time.Sleep(kCheckInterval)
+		}
+		if ok && reply.Err == OK {
+			ck.leader_ = server
+			return reply.Value
+		}
+		server = (server + 1) % ck.server_num_
+	}
 }
 
-//
-// shared by Put and Append.
-//
-// you can send an RPC with code like this:
-// ok := ck.servers[i].Call("KVServer.PutAppend", &args, &reply)
-//
-// the types of args and reply (including whether they are pointers)
-// must match the declared types of the RPC handler function's
-// arguments. and reply must be passed as a pointer.
-//
 func (ck *Clerk) PutAppend(key string, value string, op string) {
-	// You will have to modify this function.
+	ck.mu.Lock()
+	defer ck.mu.Unlock()
+	args := &PutAppendArgs{
+		Key: key, Value: value, Op: op,
+		ClientId: ck.client_id_, SeqNum: ck.seq_num_}
+	reply := &PutAppendReply{}
+
+	server := ck.leader_
+	for {
+		end_time := time.Now().Add(kTimeoutThsh)
+		var ok bool
+		go func(args *PutAppendArgs, reply *PutAppendReply) {
+			ok = ck.servers_[server].Call("KVServer.PutAppend", args, reply)
+		}(args, reply)
+		for time.Now().Before(end_time) && !ok {
+			time.Sleep(kCheckInterval)
+		}
+		if ok && reply.Err == OK {
+			ck.leader_ = server
+			ck.seq_num_++
+			return
+		}
+		server = (server + 1) % ck.server_num_
+	}
 }
 
 func (ck *Clerk) Put(key string, value string) {
