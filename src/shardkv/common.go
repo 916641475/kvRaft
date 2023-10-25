@@ -9,36 +9,64 @@ package shardkv
 // You will have to modify these definitions.
 //
 
+type ErrType int
+
 const (
-	OK             = "OK"
-	ErrNoKey       = "ErrNoKey"
-	ErrWrongGroup  = "ErrWrongGroup"
-	ErrWrongLeader = "ErrWrongLeader"
+	OK ErrType = iota
+	ErrNoKey
+	ErrWrongGroup
+	ErrWrongLeader
+	ErrTimeout
 )
 
-type Err string
+type ShardState int
 
-// Put or Append
-type PutAppendArgs struct {
-	// You'll have to add definitions here.
-	Key   string
-	Value string
-	Op    string // "Put" or "Append"
-	// You'll have to add definitions here.
-	// Field names must start with capital letters,
-	// otherwise RPC will break.
+const (
+	Serving ShardState = iota
+	Pulling
+	Pushing
+)
+
+type ArgsMarker struct {
+	ClientId int64
+	SeqNum   int
 }
 
-type PutAppendReply struct {
-	Err Err
+type PutAppendArgs struct {
+	ArgsMarker
+	Key   string
+	Value string
+	Op    string
 }
 
 type GetArgs struct {
+	ArgsMarker
 	Key string
-	// You'll have to add definitions here.
 }
 
-type GetReply struct {
-	Err   Err
+type Handoff struct {
+	args    HandoffArgs
+	target  int
+	servers []string
+}
+
+type HandoffArgs struct {
+	ArgsMarker
+	Num       int
+	Origin    int
+	Shards    []int
+	Data      map[string]string
+	ClientSeq map[int64]int
+}
+
+type HandoffDoneArgs struct {
+	Num      int
+	Receiver int
+	Keys     []string
+	Shards   []int
+}
+
+type Reply struct {
 	Value string
+	Err   ErrType
 }

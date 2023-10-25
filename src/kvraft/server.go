@@ -29,11 +29,11 @@ type Op struct {
 }
 
 type KVServer struct {
-	mu             sync.Mutex
+	mu_            sync.Mutex
 	cond_          sync.Cond
-	me             int
-	rf             *raft.Raft
-	applyCh        chan raft.ApplyMsg
+	me_            int
+	rf_            *raft.Raft
+	applyCh_       chan raft.ApplyMsg
 	dead           int32
 	data_          map[string]string
 	client_seq_    map[int64]int
@@ -45,12 +45,12 @@ type KVServer struct {
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	op := Op{OpType: "Get", Key: args.Key}
-	index, term, is_leader := kv.rf.Start(op)
+	index, term, is_leader := kv.rf_.Start(op)
 	if !is_leader {
 		reply.Err = ErrWrongLeader
 		return
 	}
-	kv.mu.Lock()
+	kv.mu_.Lock()
 	for index != kv.index_toapply_ {
 		kv.cond_.Wait()
 	}
@@ -60,19 +60,19 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 		reply.Err = OK
 		reply.Value = kv.data_[args.Key]
 	}
-	kv.mu.Unlock()
+	kv.mu_.Unlock()
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	op := Op{
 		OpType: args.Op, Key: args.Key, Value: args.Value,
 		ClientId: args.ClientId, SeqNum: args.SeqNum}
-	index, term, is_leader := kv.rf.Start(op)
+	index, term, is_leader := kv.rf_.Start(op)
 	if !is_leader {
 		reply.Err = ErrWrongLeader
 		return
 	}
-	kv.mu.Lock()
+	kv.mu_.Lock()
 	for index != kv.index_toapply_ {
 		kv.cond_.Wait()
 	}
@@ -81,14 +81,14 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	} else {
 		reply.Err = OK
 	}
-	kv.mu.Unlock()
+	kv.mu_.Unlock()
 }
 
 func (kv *KVServer) ListenThread() {
 	for !kv.killed() {
-		apply_msg := <-kv.applyCh
+		apply_msg := <-kv.applyCh_
 		if apply_msg.CommandValid {
-			kv.mu.Lock()
+			kv.mu_.Lock()
 			op_toapply_ := apply_msg.Command.(Op)
 			if op_toapply_.OpType != "Get" && kv.client_seq_[op_toapply_.ClientId] < op_toapply_.SeqNum {
 				kv.client_seq_[op_toapply_.ClientId] = op_toapply_.SeqNum
@@ -98,23 +98,23 @@ func (kv *KVServer) ListenThread() {
 					kv.data_[op_toapply_.Key] += op_toapply_.Value
 				}
 			}
-			if _, is_leader := kv.rf.GetState(); is_leader {
+			if _, is_leader := kv.rf_.GetState(); is_leader {
 				kv.index_toapply_ = apply_msg.CommandIndex
 				kv.term_toapply_ = apply_msg.CommandTerm
-				kv.mu.Unlock()
+				kv.mu_.Unlock()
 				kv.cond_.Broadcast()
 			} else {
-				kv.mu.Unlock()
+				kv.mu_.Unlock()
 			}
-			if kv.rf.GetStateSize() >= kv.maxraftstate && kv.maxraftstate != -1 {
-				kv.mu.Lock()
+			if kv.rf_.GetStateSize() >= kv.maxraftstate && kv.maxraftstate != -1 {
+				kv.mu_.Lock()
 				kv.MakeSnapshot(apply_msg.CommandIndex)
-				kv.mu.Unlock()
+				kv.mu_.Unlock()
 			}
 		} else {
-			kv.mu.Lock()
+			kv.mu_.Lock()
 			kv.ReadSnapshot(apply_msg.Snapshot)
-			kv.mu.Unlock()
+			kv.mu_.Unlock()
 		}
 	}
 }
@@ -124,7 +124,7 @@ func (kv *KVServer) MakeSnapshot(index int) {
 	e := labgob.NewEncoder(w)
 	e.Encode(kv.data_)
 	e.Encode(kv.client_seq_)
-	kv.rf.Snapshot(index, w.Bytes())
+	kv.rf_.Snapshot(index, w.Bytes())
 }
 
 func (kv *KVServer) ReadSnapshot(snapshot []byte) {
@@ -144,7 +144,7 @@ func (kv *KVServer) ReadSnapshot(snapshot []byte) {
 
 func (kv *KVServer) Kill() {
 	atomic.StoreInt32(&kv.dead, 1)
-	kv.rf.Kill()
+	kv.rf_.Kill()
 }
 
 func (kv *KVServer) killed() bool {
@@ -152,15 +152,15 @@ func (kv *KVServer) killed() bool {
 	return z == 1
 }
 
-func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister, maxraftstate int) *KVServer {
+func StartKVServer(servers []*labrpc.ClientEnd, me_ int, persister *raft.Persister, maxraftstate int) *KVServer {
 	labgob.Register(Op{})
 
 	kv := new(KVServer)
-	kv.me = me
+	kv.me_ = me_
 	kv.maxraftstate = maxraftstate
-	kv.cond_ = *sync.NewCond(&kv.mu)
-	kv.applyCh = make(chan raft.ApplyMsg)
-	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
+	kv.cond_ = *sync.NewCond(&kv.mu_)
+	kv.applyCh_ = make(chan raft.ApplyMsg)
+	kv.rf_ = raft.Make(servers, me_, persister, kv.applyCh_)
 	kv.ReadSnapshot(persister.ReadSnapshot())
 	go kv.ListenThread()
 	return kv

@@ -1,6 +1,7 @@
 package shardctrler
 
-//
+import "log"
+
 // Shard controler: assigns shards to replication groups.
 //
 // RPC interface:
@@ -15,7 +16,14 @@ package shardctrler
 // assigned to group 0 (the invalid group).
 //
 // You will need to add fields to the RPC argument structs.
-//
+const Debug = true
+
+func DPrintf(format string, a ...interface{}) (n int, err error) {
+	if Debug {
+		log.Printf(format, a...)
+	}
+	return
+}
 
 // The number of shards.
 const NShards = 10
@@ -29,13 +37,16 @@ type Config struct {
 }
 
 const (
-	OK = "OK"
+	OK         = "OK"
+	ErrTimeout = "ErrTimeout"
 )
 
 type Err string
 
 type JoinArgs struct {
-	Servers map[int][]string // new GID -> servers mappings
+	Servers  map[int][]string // new GID -> servers mappings
+	ClientId int64
+	SeqNum   int
 }
 
 type JoinReply struct {
@@ -44,7 +55,9 @@ type JoinReply struct {
 }
 
 type LeaveArgs struct {
-	GIDs []int
+	GIDs     []int
+	ClientId int64
+	SeqNum   int
 }
 
 type LeaveReply struct {
@@ -53,8 +66,10 @@ type LeaveReply struct {
 }
 
 type MoveArgs struct {
-	Shard int
-	GID   int
+	Shard    int
+	GID      int
+	ClientId int64
+	SeqNum   int
 }
 
 type MoveReply struct {
@@ -63,7 +78,7 @@ type MoveReply struct {
 }
 
 type QueryArgs struct {
-	Num int // desired config number
+	Num int
 }
 
 type QueryReply struct {

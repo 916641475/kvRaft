@@ -23,6 +23,14 @@ func Max(a int, b int) int {
 	}
 }
 
+func Min(a int, b int) int {
+	if a <= b {
+		return a
+	} else {
+		return b
+	}
+}
+
 func (rf *Raft) getLogEntry(index int) *LogEntry {
 	return &rf.logs_[index-rf.last_include_index_]
 }
@@ -233,7 +241,7 @@ func (rf *Raft) applyThread() {
 		for rf.commit_index_ <= rf.apply_index_ {
 			rf.apply_cond_.Wait()
 		}
-		for i := rf.apply_index_ + 1; i <= rf.commit_index_; i++ {
+		for i := rf.apply_index_ + 1; i <= Min(rf.LastLogIndex(), rf.commit_index_); i++ {
 			logentry := rf.getLogEntry(i)
 			apply_msg := ApplyMsg{
 				CommandValid: true, CommandIndex: i, CommandTerm: logentry.Term,
@@ -242,8 +250,8 @@ func (rf *Raft) applyThread() {
 			rf.mu.Unlock()
 			rf.applyCh <- apply_msg
 			rf.mu.Lock()
+			rf.apply_index_++
 		}
-		rf.apply_index_ = rf.commit_index_
 		rf.mu.Unlock()
 	}
 }
